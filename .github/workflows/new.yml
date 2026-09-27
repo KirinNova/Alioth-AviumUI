@@ -1,0 +1,98 @@
+name: Build AviumUI for Alioth
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    # 授予 Actions 读取源码与写入缓存的权限
+    permissions:
+      contents: read
+      actions: write
+
+    steps:
+      - name: Free Disk Space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo apt-get clean
+          df -h
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison build-essential ccache curl flex g++-multilib gcc-multilib \
+            git git-lfs gnupg gperf imagemagick protobuf-compiler python3-protobuf \
+            lib32readline-dev lib32z1-dev libdw-dev libelf-dev lz4 libsdl1.2-dev \
+            libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool \
+            squashfs-tools xsltproc zip zlib1g-dev
+
+      - name: Setup Ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: avium-alioth-v1-${{ github.sha }}
+          restore-keys: |
+            avium-alioth-v1-
+            avium-alioth-
+          max-size: 30G
+
+      - name: Setup Toolchains & Environment
+        run: |
+          # 1. 配置 Repo 工具
+          mkdir -p ~/bin
+          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+          chmod a+x ~/bin/repo
+          echo "$HOME/bin" >> $GITHUB_PATH
+
+          # 2. 配置全局 Git 身份
+          git config --global user.name "AviumUI Builder"
+          git config --global user.email "builder@aviumui.local"
+
+      - name: Init and Sync AviumUI Source
+        run: |
+          mkdir -p android/avium
+          cd android/avium
+          repo init -u https://github.com/AviumUI/android_manifests -b avium-16 --git-lfs
+          # 使用 --depth=1 浅克隆加速同步
+          repo sync -c -j$(nproc --all) --force-sync --no-clone-bundle --no-tags --quiet --depth=1
+
+      - name: Clone Device Trees and Vendor for Alioth
+        working-directory: android/avium
+        run: |
+          git clone https://github.com/LineageOS/android_device_xiaomi_sm8250-common.git -b lineage-24.0 device/xiaomi/sm8250-common --depth=1
+          git clone https://github.com/LineageOS/android_device_xiaomi_alioth.git -b lineage-24.0 device/xiaomi/alioth --depth=1
+          git clone https://github.com/LineageOS/android_hardware_xiaomi.git -b lineage-24.0 hardware/xiaomi --depth=1
+          git clone https://github.com/TheMuppets/proprietary_vendor_xiaomi_alioth.git -b lineage-24.0 vendor/xiaomi/alioth --depth=1
+          git clone https://github.com/TheMuppets/proprietary_vendor_xiaomi_sm8250-common.git -b lineage-24.0 vendor/xiaomi/sm8250-common --depth=1
+          git clone https://github.com/LineageOS/android_kernel_xiaomi_sm8250.git -b lineage-24.0 kernel/xiaomi/sm8250 --depth=1
+
+      - name: Setup Swap
+        run: |
+          sudo fallocate -l 16G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
+
+      - name: Build AviumUI
+        working-directory: android/avium
+        run: |
+          # 注入 ccache 环境变量与大小限制
+          export USE_CCACHE=1
+          export CCACHE_EXEC=/usr/bin/ccache
+          ccache -M 30G
+          ccache -s
+
+          source build/envsetup.sh
+          # 如需 GMS 取消注释下一行
+          # avium get_gms
+          breakfast alioth userdebug
+          brunch alioth userdebug
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AviumUI-alioth-build
+          path: android/avium/out/target/product/alioth/*.zip
+          retention-days: 7
