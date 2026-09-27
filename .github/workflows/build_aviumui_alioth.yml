@@ -1,0 +1,90 @@
+name: Build AviumUI for Alioth
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Free Disk Space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo apt-get clean
+          df -h
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison build-essential ccache curl flex g++-multilib gcc-multilib \
+            git git-lfs gnupg gperf imagemagick protobuf-compiler python3-protobuf \
+            lib32readline-dev lib32z1-dev libdw-dev libelf-dev lz4 libsdl1.2-dev \
+            libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool \
+            squashfs-tools xsltproc zip zlib1g-dev
+
+      - name: Setup Repo Tool
+        run: |
+          mkdir -p ~/bin
+          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+          chmod a+x ~/bin/repo
+          echo "$HOME/bin" >> $GITHUB_PATH
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "AviumUI Builder"
+          git config --global user.email "builder@aviumui.local"
+
+      - name: Init and Sync AviumUI Source
+        run: |
+          mkdir -p android/avium
+          cd android/avium
+          repo init -u https://github.com/AviumUI/android_manifests -b avium-16 --git-lfs
+          repo sync -c -j$(nproc --all) --force-sync --no-clone-bundle --no-tags --quiet
+
+      - name: Clone Device Trees and Vendor for Alioth
+        working-directory: android/avium
+        run: |
+          # SM8250 通用设备树
+          git clone https://github.com/LineageOS/android_device_xiaomi_sm8250-common.git -b lineage-24.0 device/xiaomi/sm8250-common
+
+          # Alioth 专用设备树 (分支需确认)
+          git clone https://github.com/LineageOS/android_device_xiaomi_alioth.git -b lineage-24.0 device/xiaomi/alioth
+
+          # hardware_xiaomi
+          git clone https://github.com/LineageOS/android_hardware_xiaomi.git -b lineage-24.0 hardware/xiaomi
+
+          # Alioth Vendor (分支需确认)
+          git clone https://github.com/TheMuppets/proprietary_vendor_xiaomi_alioth.git -b lineage-24.0 vendor/xiaomi/alioth
+
+          # SM8250 通用 Vendor (从设备树依赖中确认具体仓库)
+          # 注意：此仓库可能需要从 alioth 设备树的 lineage.dependencies 中查找
+          git clone https://github.com/TheMuppets/proprietary_vendor_xiaomi_sm8250-common.git -b lineage-24.0 vendor/xiaomi/sm8250-common
+
+          # SM8250 内核
+          git clone https://github.com/LineageOS/android_kernel_xiaomi_sm8250.git -b lineage-24.0 kernel/xiaomi/sm8250
+
+      - name: Setup Swap
+        run: |
+          sudo fallocate -l 16G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
+
+      - name: Build AviumUI
+        working-directory: android/avium
+        run: |
+          source build/envsetup.sh
+          # 如需 GMS 取消注释下一行
+          # avium get_gms
+          breakfast alioth userdebug
+          brunch alioth userdebug
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AviumUI-alioth-build
+          path: android/avium/out/target/product/alioth/*.zip
+          retention-days: 7
